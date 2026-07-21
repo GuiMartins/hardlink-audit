@@ -1,0 +1,18 @@
+services:
+  hardlink-audit:
+    build: .
+    container_name: hardlink-audit
+    network_mode: host   # simplest way to reach qbit/radarr/sonarr on the same host, whatever network they're on
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /:/hostroot:ro    # read-only - needed to stat() files through whatever mounts each container uses
+    environment:
+      HOST_ROOT_MOUNT: /hostroot
+      # Only needed if qBittorrent's WebUI doesn't have localhost auth bypass enabled:
+      # HA_QBIT_USERNAME: admin
+      # HA_QBIT_PASSWORD: changeme
+      #
+      # Only needed if container names don't contain "radarr"/"sonarr"/"qbittorrent":
+      # HA_RADARR_CONTAINERS: radarr,radarr-4k
+      # HA_SONARR_CONTAINERS: sonarr
+      # HA_QBITTORRENT_CONTAINERS: qbittorrent
