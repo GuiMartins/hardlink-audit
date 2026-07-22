@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from . import audit, report
+from . import audit, discovery, qbit_client, report
 from .cli import run_audit
 
 DATA_DIR = os.environ.get("DATA_DIR", "/data")
@@ -130,6 +130,40 @@ def trigger_run():
     if not already_running:
         threading.Thread(target=_do_run, daemon=True).start()
     return RedirectResponse(url="/", status_code=303)
+
+
+@app.post("/delete/{download_id}")
+def delete_download(download_id: str):
+    with _lock:
+        result = _state["result"]
+        allowed = audit.is_download_id_deletable(result, download_id)
+    if not allowed:
+        return HTMLResponse(
+            "não permitido apagar esse item por aqui (motivo desconhecido presente "
+            "nesse torrent - confira manualmente).",
+            status_code=403,
+        )
+
+    try:
+        containers = discovery.discover_containers()
+    except discovery.DiscoveryError as exc:
+        return HTMLResponse(f"erro na descoberta: {exc}", status_code=500)
+
+    for container in containers["qbittorrent"]:
+        client = qbit_client.QbitClient(container)
+        try:
+            client.connect()
+        except qbit_client.QbitAuthError:
+            continue
+        client.delete_torrent(download_id, delete_files=True)
+        with _lock:
+            _state["result"].unlinked_downloads = [
+                u for u in _state["result"].unlinked_downloads if u.download_id != download_id
+            ]
+        _save_state()
+        return RedirectResponse(url="/", status_code=303)
+
+    return HTMLResponse("não consegui alcançar o qBittorrent pra apagar.", status_code=500)
 
 
 @app.get("/api/last-result")

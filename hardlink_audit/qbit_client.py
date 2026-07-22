@@ -80,3 +80,11 @@ class QbitClient:
         r = self.session.get(f"{self.base_url}/api/v2/torrents/info", timeout=30)
         r.raise_for_status()
         return r.json()
+
+    def delete_torrent(self, torrent_hash, delete_files=True):
+        r = self.session.post(
+            f"{self.base_url}/api/v2/torrents/delete",
+            data={"hashes": torrent_hash.lower(), "deleteFiles": "true" if delete_files else "false"},
+            timeout=30,
+        )
+        r.raise_for_status()
