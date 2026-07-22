@@ -28,6 +28,7 @@ def run_audit():
         return result, log_lines
 
     arr_instances = []
+    resolvers_by_service = {}
     for kind in ("radarr", "sonarr"):
         for container in containers[kind]:
             resolver = PathResolver(discovery.container_mounts(container), host_root=host_root)
@@ -37,6 +38,7 @@ def run_audit():
                 result.errors.append((container.name, str(exc)))
                 continue
             arr_instances.append(instance)
+            resolvers_by_service[instance.name] = resolver
             log_lines.append(f"[+] {kind}/{container.name} -> {instance.base_url}")
 
     for instance in arr_instances:
@@ -54,7 +56,14 @@ def run_audit():
             result.errors.append((container.name, str(exc)))
             continue
         log_lines.append(f"[+] qbittorrent/{container.name} -> {client.base_url}")
-        audit.audit_qbit_orphans(client, known_download_ids, result)
+        try:
+            torrents = client.torrents()
+        except Exception as exc:  # noqa: BLE001
+            result.errors.append((container.name, f"falha lendo torrents: {exc}"))
+            continue
+        qbit_resolver = PathResolver(discovery.container_mounts(container), host_root=host_root)
+        audit.find_orphan_torrents(torrents, known_download_ids, result)
+        audit.reclassify_relocated_downloads(result, resolvers_by_service, torrents, qbit_resolver)
 
     return result, log_lines
 
