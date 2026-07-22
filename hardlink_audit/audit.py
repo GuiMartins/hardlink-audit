@@ -155,12 +155,7 @@ def collect_seen_download_ids(result):
     return {f.download_id for f in result.import_findings if f.download_id}
 
 
-def audit_qbit_orphans(qbit_client, known_download_ids, result):
-    try:
-        torrents = qbit_client.torrents()
-    except Exception as exc:  # noqa: BLE001
-        result.errors.append((qbit_client.name, f"falha lendo torrents: {exc}"))
-        return
+def find_orphan_torrents(torrents, known_download_ids, result):
     for t in torrents:
         h = (t.get("hash") or "").upper()
         if h and h not in known_download_ids:
@@ -173,3 +168,43 @@ def audit_qbit_orphans(qbit_client, known_download_ids, result):
                     state=t.get("state", "?"),
                 )
             )
+
+
+def reclassify_relocated_downloads(result, resolvers_by_service, torrents, qbit_resolver):
+    """Radarr/Sonarr history is an immutable log: it records where a file
+    was dropped *at import time*, not where it lives now. If the download
+    folder gets reorganized afterwards (files moved, not copied - the
+    hardlink survives), a stale history path alone would misreport a fine,
+    still-linked file as missing. Before finalizing "missing_dropped", check
+    qBittorrent's own CURRENT record for that download (matched by hash) -
+    it's a live pointer, not a log entry."""
+    if not torrents or not qbit_resolver:
+        return
+    by_hash = {(t.get("hash") or "").upper(): t for t in torrents if t.get("hash")}
+
+    for f in result.import_findings:
+        if f.status != "missing_dropped" or not f.download_id:
+            continue
+        torrent = by_hash.get(f.download_id)
+        if torrent is None:
+            continue
+        resolver = resolvers_by_service.get(f.service)
+        if resolver is None:
+            continue
+        imported_local = resolver.to_local_path(f.imported_path)
+        imported_stat = _stat(imported_local) if imported_local else None
+        if imported_stat is None:
+            continue
+
+        basename = os.path.basename(f.dropped_path)
+        content_path = torrent.get("content_path") or ""
+        for candidate in (content_path, os.path.join(content_path, basename)):
+            current_local = qbit_resolver.to_local_path(candidate)
+            current_stat = _stat(current_local) if current_local else None
+            if current_stat and current_stat.st_dev == imported_stat.st_dev and current_stat.st_ino == imported_stat.st_ino:
+                f.status = "ok"
+                f.detail = (
+                    f"pasta de download foi reorganizada desde o import (agora em {current_local}), "
+                    "hardlink confirmado no local atual"
+                )
+                break
