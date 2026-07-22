@@ -13,7 +13,7 @@ as the source of an import (orphans) - informational, since *arr history
 can be pruned/limited, so absence isn't proof of anything.
 """
 import os
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 
 
 @dataclass
@@ -43,6 +43,21 @@ class AuditResult:
     import_findings: list = field(default_factory=list)
     orphan_torrents: list = field(default_factory=list)
     errors: list = field(default_factory=list)  # (context, message) pairs - non-fatal problems to surface
+
+    def to_dict(self):
+        return {
+            "import_findings": [asdict(f) for f in self.import_findings],
+            "orphan_torrents": [asdict(t) for t in self.orphan_torrents],
+            "errors": [list(e) for e in self.errors],
+        }
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls(
+            import_findings=[ImportFinding(**f) for f in data.get("import_findings", [])],
+            orphan_torrents=[OrphanTorrent(**t) for t in data.get("orphan_torrents", [])],
+            errors=[tuple(e) for e in data.get("errors", [])],
+        )
 
 
 def _stat(local_path):

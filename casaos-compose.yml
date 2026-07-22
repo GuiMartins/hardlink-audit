@@ -1,0 +1,28 @@
+name: hardlink-audit
+services:
+  hardlink-audit:
+    image: ghcr.io/guimartins/hardlink-audit:latest
+    container_name: hardlink-audit
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /:/hostroot:ro
+      - /DATA/AppData/$AppID/data:/data
+    environment:
+      HOST_ROOT_MOUNT: /hostroot
+      DATA_DIR: /data
+      HA_INTERVAL_HOURS: "6"
+    x-casaos:
+      title:
+        en_us: hardlink-audit
+        pt_br: hardlink-audit
+      category: Utilities
+      port_map: "8990"
+      scheme: http
+      index: /
+      description:
+        en_us: Audits hardlink integrity between qBittorrent and Radarr/Sonarr
+        pt_br: Audita integridade de hardlink entre qBittorrent e Radarr/Sonarr
+      main: hardlink-audit
+      author: local

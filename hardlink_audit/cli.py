@@ -4,26 +4,28 @@ import sys
 from . import arr_client, audit, discovery, qbit_client, report
 from .pathmap import PathResolver
 
+BAD_STATUSES = {"copied", "cross_filesystem", "missing_dropped", "missing_imported", "unresolved"}
 
-def main():
+
+def run_audit():
+    """Discover everything and run the full audit. Returns (AuditResult, log_lines)."""
     host_root = os.environ.get("HOST_ROOT_MOUNT", "/hostroot")
+    log_lines = []
+    result = audit.AuditResult()
 
     try:
         containers = discovery.discover_containers()
     except discovery.DiscoveryError as exc:
-        print(f"erro na descoberta de containers: {exc}", file=sys.stderr)
-        return 2
-
-    result = audit.AuditResult()
+        result.errors.append(("discovery", str(exc)))
+        return result, log_lines
 
     if not containers["radarr"] and not containers["sonarr"]:
-        print(
-            "nenhum container de Radarr ou Sonarr encontrado. "
-            "Se os nomes fogem do padrão, defina HA_RADARR_CONTAINERS / "
-            "HA_SONARR_CONTAINERS.",
-            file=sys.stderr,
-        )
-        return 2
+        result.errors.append((
+            "discovery",
+            "nenhum container de Radarr ou Sonarr encontrado. Se os nomes fogem do "
+            "padrão, defina HA_RADARR_CONTAINERS / HA_SONARR_CONTAINERS.",
+        ))
+        return result, log_lines
 
     arr_instances = []
     for kind in ("radarr", "sonarr"):
@@ -35,7 +37,7 @@ def main():
                 result.errors.append((container.name, str(exc)))
                 continue
             arr_instances.append(instance)
-            print(f"[+] {kind}/{container.name} -> {instance.base_url}", file=sys.stderr)
+            log_lines.append(f"[+] {kind}/{container.name} -> {instance.base_url}")
 
     for instance in arr_instances:
         audit.audit_arr_instance(instance, result)
@@ -51,13 +53,19 @@ def main():
         except qbit_client.QbitAuthError as exc:
             result.errors.append((container.name, str(exc)))
             continue
-        print(f"[+] qbittorrent/{container.name} -> {client.base_url}", file=sys.stderr)
+        log_lines.append(f"[+] qbittorrent/{container.name} -> {client.base_url}")
         audit.audit_qbit_orphans(client, known_download_ids, result)
 
+    return result, log_lines
+
+
+def main():
+    result, log_lines = run_audit()
+    for line in log_lines:
+        print(line, file=sys.stderr)
     print(report.render_text(result))
 
-    bad_statuses = {"copied", "cross_filesystem", "missing_dropped", "missing_imported", "unresolved"}
-    if any(f.status in bad_statuses for f in result.import_findings):
+    if any(f.status in BAD_STATUSES for f in result.import_findings):
         return 1
     return 0
 
