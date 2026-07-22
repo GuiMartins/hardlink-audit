@@ -2,6 +2,8 @@ import html
 from collections import Counter, defaultdict
 from datetime import datetime
 
+from .audit import REASON_COPIED, REASON_LABEL, REASON_TEXT
+
 
 def human_size(n):
     n = float(n)
@@ -38,9 +40,15 @@ def render_text(result):
             f"{len(result.unlinked_downloads) + len(copied_only)} download(s) não linkados"
         )
         for u in sorted(result.unlinked_downloads, key=lambda u: -u.unlinked_bytes)[:20]:
+            why, action = REASON_TEXT.get(u.reason, ("", ""))
             lines.append(f"  [{u.category}] {u.name}: ~{human_size(u.unlinked_bytes)} sem link (varredura)")
+            lines.append(f"    motivo: {why}")
+            lines.append(f"    ação: {action}")
         for f in copied_only[:20]:
+            why, action = REASON_TEXT[REASON_COPIED]
             lines.append(f"  [{f.service}] {f.source_title}: ~{human_size(f.size)} sem link (histórico)")
+            lines.append(f"    motivo: {why}")
+            lines.append(f"    ação: {action}")
         extra = (len(result.unlinked_downloads) - 20 if len(result.unlinked_downloads) > 20 else 0) + \
                 (len(copied_only) - 20 if len(copied_only) > 20 else 0)
         if extra > 0:
@@ -168,15 +176,21 @@ def _compact_table(findings, extra_head="", with_detail=True):
     )
 
 
-def _unlinked_rows(items):
-    rows = []
-    for u in items:
-        rows.append(
-            f"<tr><td>{_esc(u.name)}</td><td>{_esc(u.category)}</td>"
-            f"<td class='num bad-num'>{human_size(u.unlinked_bytes)}</td>"
-            f"<td class='num'>{human_size(u.total_bytes)}</td></tr>"
-        )
-    return "\n".join(rows)
+def _waste_card(name, subtitle, size_bytes, reason_key):
+    label = REASON_LABEL.get(reason_key, reason_key)
+    why, action = REASON_TEXT.get(reason_key, ("", ""))
+    return f"""
+    <div class="waste-item">
+      <div class="waste-head">
+        <span class="badge {'bad' if reason_key == REASON_COPIED else 'warn'}">{_esc(label)}</span>
+        <b>{_esc(name)}</b>
+        <span class="waste-sub">{_esc(subtitle)}</span>
+        <span class="num bad-num waste-size">{human_size(size_bytes)}</span>
+      </div>
+      <p class="waste-why">{_esc(why)}</p>
+      <p class="waste-action"><b>O que fazer:</b> {_esc(action)}</p>
+    </div>
+    """
 
 
 def render_html(result, log_lines, last_run_iso, next_run_iso=None, running=False):
@@ -218,18 +232,20 @@ def render_html(result, log_lines, last_run_iso, next_run_iso=None, running=Fals
     wasted_html = ""
     if wasted_bytes:
         source_count = len(result.unlinked_downloads) + len(copied_only)
-        copied_rows = "".join(
-            f"<tr><td>{_esc(f.source_title)}</td><td>{_esc(f.service)}</td>"
-            f"<td class='num bad-num'>{human_size(f.size)}</td><td class='num'>{human_size(f.size)}</td></tr>"
-            for f in copied_only
+        swept_cards = "".join(
+            _waste_card(u.name, u.category, u.unlinked_bytes, u.reason)
+            for u in sorted(result.unlinked_downloads, key=lambda u: -u.unlinked_bytes)
+        )
+        copied_cards = "".join(
+            _waste_card(f.source_title, f.service, f.size, REASON_COPIED)
+            for f in sorted(copied_only, key=lambda f: -f.size)
         )
         wasted_html = f"""
         <div class="wasted-hero">
           <div class="wasted-n">{human_size(wasted_bytes)}</div>
           <div class="wasted-l">desperdiçados em {source_count} download(s) não linkados</div>
         </div>
-        <table><thead><tr><th>Nome</th><th>Categoria/Serviço</th><th>Sem link</th><th>Tamanho total</th></tr></thead>
-        <tbody>{_unlinked_rows(sorted(result.unlinked_downloads, key=lambda u: -u.unlinked_bytes))}{copied_rows}</tbody></table>
+        {swept_cards}{copied_cards}
         """
 
     attention_html = (
@@ -322,6 +338,13 @@ td.bad-num {{ color: #ff8a8a; font-weight: 600; }}
                 border-radius: 10px; padding: 1rem 1.2rem; margin-bottom: .8rem; }}
 .wasted-hero .wasted-n {{ font-size: 2rem; font-weight: 800; color: #ff8a8a; line-height: 1.1; }}
 .wasted-hero .wasted-l {{ font-size: .8rem; color: #999; margin-top: .3rem; }}
+.waste-item {{ background: rgba(127,127,127,.06); border: 1px solid rgba(127,127,127,.15);
+               border-radius: 8px; padding: .8rem 1rem; margin-bottom: .6rem; }}
+.waste-head {{ display: flex; align-items: baseline; gap: .5rem; flex-wrap: wrap; }}
+.waste-sub {{ color: #888; font-size: .78rem; }}
+.waste-size {{ margin-left: auto; }}
+.waste-why {{ margin: .5rem 0 0; font-size: .83rem; }}
+.waste-action {{ margin: .35rem 0 0; color: #999; font-size: .8rem; }}
 td.detail {{ color: #999; font-size: .8rem; }}
 tr:last-child td {{ border-bottom: none; }}
 .badge {{ display: inline-block; white-space: nowrap; padding: .2rem .6rem; border-radius: 999px;
