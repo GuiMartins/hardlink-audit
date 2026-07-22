@@ -13,8 +13,10 @@ as the source of an import (orphans) - informational, since *arr history
 can be pruned/limited, so absence isn't proof of anything.
 """
 import os
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass, field
+
+_SIDECAR_EXTENSIONS = {".srt", ".sub", ".idx", ".ssa", ".ass", ".nfo", ".txt", ".jpg", ".jpeg", ".png"}
 
 
 @dataclass
@@ -39,6 +41,49 @@ class OrphanTorrent:
     state: str
 
 
+REASON_COPIED = "copied"
+REASON_ORPHANED_UPGRADE = "orphaned_upgrade"
+REASON_SIDECAR_ONLY = "sidecar_only"
+REASON_UNKNOWN = "unknown"
+
+REASON_TEXT = {
+    REASON_COPIED: (
+        "O import virou uma cópia real em vez de hardlink - o mesmo arquivo existe duas vezes no disco.",
+        "Apague o arquivo na pasta de download e force o Radarr/Sonarr a re-importar (ele deve linkar "
+        "certo se o download ainda estiver lá), ou apague o arquivo na library e re-hardlinke manualmente "
+        "a partir da cópia em downloads. Se isso se repetir bastante, vale conferir se download e library "
+        "seguem no mesmo disco/filesystem.",
+    ),
+    REASON_ORPHANED_UPGRADE: (
+        "Esse download foi substituído por um upgrade de qualidade depois - o Radarr/Sonarr apagou a "
+        "versão antiga da library, mas a cópia correspondente na pasta de download não foi limpa.",
+        "Se não precisa mais seedar essa versão antiga, remova o torrent do qBittorrent com a opção de "
+        "apagar os arquivos - o espaço é recuperado na hora. Se quiser manter seedando (ratio de tracker "
+        "privado, por exemplo), não precisa fazer nada, é esperado ficar sem link mesmo.",
+    ),
+    REASON_SIDECAR_ONLY: (
+        "O arquivo principal de vídeo está linkado corretamente - a diferença é só de arquivos auxiliares "
+        "(legenda, nfo, etc) que não foram linkados junto.",
+        "Geralmente não vale a pena mexer, é pouca coisa (poucos KB/MB por item).",
+    ),
+    REASON_UNKNOWN: (
+        "Esse arquivo específico não bate com nenhum import marcado como cópia ou obsoleto no histórico - "
+        "pode ser um item de um pacote com vários arquivos onde só esse perdeu o link depois do import "
+        "(ex: um episódio apagado/movido na library fora do *arr), ou algo sem registro no histórico.",
+        "Compare manualmente o arquivo na pasta de download com o correspondente na library (mesmo nome/"
+        "tamanho). Se o conteúdo bater e não estiver linkado, apague uma das cópias e recrie o hardlink, "
+        "ou force o *arr a re-importar.",
+    ),
+}
+
+REASON_LABEL = {
+    REASON_COPIED: "Cópia real",
+    REASON_ORPHANED_UPGRADE: "Órfão pós-upgrade",
+    REASON_SIDECAR_ONLY: "Só arquivo auxiliar",
+    REASON_UNKNOWN: "Causa desconhecida",
+}
+
+
 @dataclass
 class UnlinkedDownload:
     """A completed, *arr-categorized torrent whose data (per a direct
@@ -49,6 +94,7 @@ class UnlinkedDownload:
     download_id: str
     unlinked_bytes: int
     total_bytes: int
+    reason: str = REASON_UNKNOWN
 
 
 @dataclass
@@ -272,14 +318,38 @@ def scan_download_folder_links(torrents, qbit_resolver, result, known_download_i
     Also skips any content_path shared by more than one torrent (possible
     with a "no subfolder" save layout, where several torrents' files sit
     directly in the same category folder) - walking it per-torrent would
-    misattribute every torrent sharing that path with each other's bytes."""
+    misattribute every torrent sharing that path with each other's bytes.
+
+    Reason is determined PER FILE, not per torrent: a season-pack torrent
+    can have some episodes correctly linked and others not, all under one
+    download_id - aggregating by torrent-wide status previously produced a
+    wrong "just a sidecar file" verdict on a real 3.8GB duplicate (two
+    unlinked episodes in an otherwise-fine 4-episode pack). A file's own
+    extension (not an inferred torrent-wide status) decides "sidecar" now."""
     if not torrents or not qbit_resolver:
         return
     shared_paths = Counter(t.get("content_path") for t in torrents if t.get("content_path"))
+    status_by_key = {}
+    for f in result.import_findings:
+        if f.download_id:
+            status_by_key[(f.download_id, os.path.basename(f.dropped_path))] = f.status
+
+    def _reason_for(download_id, basename):
+        ext = os.path.splitext(basename)[1].lower()
+        if ext in _SIDECAR_EXTENSIONS:
+            return REASON_SIDECAR_ONLY
+        status = status_by_key.get((download_id, basename))
+        if status == "copied":
+            return REASON_COPIED
+        if status == "superseded":
+            return REASON_ORPHANED_UPGRADE
+        return REASON_UNKNOWN
+
     for t in torrents:
         if t.get("progress", 0) < 1:
             continue
-        if (t.get("hash") or "").upper() not in known_download_ids:
+        download_id = (t.get("hash") or "").upper()
+        if download_id not in known_download_ids:
             continue
         content_path = t.get("content_path") or ""
         if shared_paths.get(content_path, 0) > 1:
@@ -287,22 +357,27 @@ def scan_download_folder_links(torrents, qbit_resolver, result, known_download_i
         local = qbit_resolver.to_local_path(content_path)
         if not local:
             continue
-        unlinked_bytes = 0
+
         total_bytes = 0
+        unlinked_by_reason = defaultdict(int)
         for fpath in _iter_files(local):
             st = _stat(fpath)
             if st is None:
                 continue
             total_bytes += st.st_size
             if st.st_nlink < 2:
-                unlinked_bytes += st.st_size
-        if unlinked_bytes > 0:
-            result.unlinked_downloads.append(
-                UnlinkedDownload(
-                    name=t.get("name", "?"),
-                    category=t.get("category", "?"),
-                    download_id=(t.get("hash") or "").upper(),
-                    unlinked_bytes=unlinked_bytes,
-                    total_bytes=total_bytes,
+                reason = _reason_for(download_id, os.path.basename(fpath))
+                unlinked_by_reason[reason] += st.st_size
+
+        for reason, unlinked_bytes in unlinked_by_reason.items():
+            if unlinked_bytes > 0:
+                result.unlinked_downloads.append(
+                    UnlinkedDownload(
+                        name=t.get("name", "?"),
+                        category=t.get("category", "?"),
+                        download_id=download_id,
+                        unlinked_bytes=unlinked_bytes,
+                        total_bytes=total_bytes,
+                        reason=reason,
+                    )
                 )
-            )
