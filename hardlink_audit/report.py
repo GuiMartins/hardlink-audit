@@ -1,5 +1,6 @@
 import html
 from collections import Counter, defaultdict
+from datetime import datetime
 
 
 def human_size(n):
@@ -8,6 +9,16 @@ def human_size(n):
         if n < 1024 or unit == "TB":
             return f"{n:.1f}{unit}"
         n /= 1024
+
+
+def format_ts(iso_str):
+    if not iso_str:
+        return None
+    try:
+        dt = datetime.fromisoformat(iso_str)
+    except ValueError:
+        return iso_str
+    return dt.strftime("%d/%m/%Y %H:%M UTC")
 
 
 def render_text(result):
@@ -159,7 +170,7 @@ def _unlinked_rows(items):
     return "\n".join(rows)
 
 
-def render_html(result, log_lines, last_run_iso, next_run_iso=None):
+def render_html(result, log_lines, last_run_iso, next_run_iso=None, running=False):
     counts = Counter(f.status for f in result.import_findings)
     total = len(result.import_findings)
 
@@ -173,12 +184,15 @@ def render_html(result, log_lines, last_run_iso, next_run_iso=None):
     wasted_bytes = result.wasted_bytes()
 
     problem_count = len(attention) + len(result.unlinked_downloads)
-    banner = (
-        "<div class='banner ok'>Tudo linkado corretamente. Nenhum espaço desperdiçado encontrado.</div>"
-        if not problem_count and not result.errors
-        else f"<div class='banner bad'>{problem_count} problema(s) encontrado(s)"
-             f"{f' · ~{human_size(wasted_bytes)} desperdiçados' if wasted_bytes else ''}.</div>"
-    )
+    if running:
+        banner = "<div class='banner running'><span class='spinner'></span> Rodando agora...</div>"
+    elif not problem_count and not result.errors:
+        banner = "<div class='banner ok'>Tudo linkado corretamente. Nenhum espaço desperdiçado encontrado.</div>"
+    else:
+        banner = (
+            f"<div class='banner bad'>{problem_count} problema(s) encontrado(s)"
+            f"{f' · ~{human_size(wasted_bytes)} desperdiçados' if wasted_bytes else ''}.</div>"
+        )
 
     cards = "".join(
         f"<div class='card'><div class='n'>{counts.get(s, 0)}</div><div class='l'>{label}</div></div>"
@@ -251,9 +265,14 @@ body {{ font-family: -apple-system, Segoe UI, sans-serif; margin: 0; padding: 2r
 h1 {{ font-size: 1.4rem; margin: 0 0 .2rem; }}
 h2 {{ font-size: 1rem; margin: 1.8rem 0 .6rem; color: #aaa; text-transform: uppercase; letter-spacing: .04em; }}
 .meta {{ color: #888; font-size: .85rem; margin-bottom: 1.5rem; display: flex; align-items: center; gap: .8rem; flex-wrap: wrap; }}
-.banner {{ padding: .8rem 1rem; border-radius: 8px; font-weight: 600; margin-bottom: 1.5rem; }}
+.banner {{ padding: .8rem 1rem; border-radius: 8px; font-weight: 600; margin-bottom: 1.5rem;
+           display: flex; align-items: center; gap: .6rem; }}
 .banner.ok {{ background: #1e3a2a; color: #7ee2a8; }}
 .banner.bad {{ background: #3a1e1e; color: #ff8a8a; }}
+.banner.running {{ background: #1e2a3a; color: #7eb8f0; }}
+.spinner {{ width: 14px; height: 14px; border-radius: 50%; border: 2px solid rgba(126,184,240,.3);
+            border-top-color: #7eb8f0; animation: spin .7s linear infinite; flex: none; }}
+@keyframes spin {{ to {{ transform: rotate(360deg); }} }}
 .cards {{ display: flex; flex-wrap: wrap; gap: .75rem; margin-bottom: .5rem; }}
 .card {{ background: rgba(127,127,127,.1); border: 1px solid rgba(127,127,127,.18);
          border-radius: 10px; padding: .7rem 1.1rem; min-width: 100px; }}
@@ -293,9 +312,11 @@ details.log {{ margin-top: 2.5rem; color: #777; font-size: .8rem; border-top: 1p
 <body>
 <h1>hardlink-audit</h1>
 <div class="meta">
-  <span>última rodada: {_esc(last_run_iso) or 'nunca'}</span>
-  {f'<span>· próxima automática: {_esc(next_run_iso)}</span>' if next_run_iso else ''}
-  <form method="post" action="/run"><button type="submit">Rodar agora</button></form>
+  <span>última rodada: {_esc(format_ts(last_run_iso)) or 'nunca'}</span>
+  {f'<span>· próxima automática: {_esc(format_ts(next_run_iso))}</span>' if next_run_iso else ''}
+  <form method="post" action="/run" id="run-form">
+    <button type="submit" id="run-btn" {"disabled" if running else ""}>{"Rodando..." if running else "Rodar agora"}</button>
+  </form>
 </div>
 {banner}
 <div class="cards">{cards}</div>
@@ -307,4 +328,18 @@ details.log {{ margin-top: 2.5rem; color: #777; font-size: .8rem; border-top: 1p
 {ok_html}
 {superseded_html}
 <details class="log"><summary>log de descoberta</summary><p>{log_html}</p></details>
+<script>
+document.getElementById('run-form').addEventListener('submit', function() {{
+  var btn = document.getElementById('run-btn');
+  btn.disabled = true;
+  btn.textContent = 'Rodando...';
+}});
+{"""
+(function poll() {
+  fetch('/api/last-result').then(r => r.json()).then(d => {
+    if (d.running) { setTimeout(poll, 2000); } else { location.reload(); }
+  }).catch(() => setTimeout(poll, 3000));
+})();
+""" if running else ""}
+</script>
 </body></html>"""
