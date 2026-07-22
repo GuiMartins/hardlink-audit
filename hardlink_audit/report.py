@@ -26,16 +26,25 @@ def render_text(result):
     counts = Counter(f.status for f in result.import_findings)
     total = len(result.import_findings)
 
-    if result.unlinked_downloads:
-        wasted = result.wasted_bytes()
+    wasted = result.wasted_bytes()
+    if wasted:
+        swept_ids = {u.download_id for u in result.unlinked_downloads if u.download_id}
+        copied_only = [
+            f for f in result.import_findings
+            if f.status == "copied" and f.download_id not in swept_ids
+        ]
         lines.append(
-            f"ESPAÇO DESPERDIÇADO (varredura direta): ~{human_size(wasted)} em "
-            f"{len(result.unlinked_downloads)} download(s) não linkados"
+            f"ESPAÇO DESPERDIÇADO: ~{human_size(wasted)} em "
+            f"{len(result.unlinked_downloads) + len(copied_only)} download(s) não linkados"
         )
         for u in sorted(result.unlinked_downloads, key=lambda u: -u.unlinked_bytes)[:20]:
-            lines.append(f"  [{u.category}] {u.name}: ~{human_size(u.unlinked_bytes)} sem link")
-        if len(result.unlinked_downloads) > 20:
-            lines.append(f"  ... e mais {len(result.unlinked_downloads) - 20}")
+            lines.append(f"  [{u.category}] {u.name}: ~{human_size(u.unlinked_bytes)} sem link (varredura)")
+        for f in copied_only[:20]:
+            lines.append(f"  [{f.service}] {f.source_title}: ~{human_size(f.size)} sem link (histórico)")
+        extra = (len(result.unlinked_downloads) - 20 if len(result.unlinked_downloads) > 20 else 0) + \
+                (len(copied_only) - 20 if len(copied_only) > 20 else 0)
+        if extra > 0:
+            lines.append(f"  ... e mais {extra}")
         lines.append("")
 
     lines.append(f"== {total} imports auditados ==")
@@ -200,16 +209,27 @@ def render_html(result, log_lines, last_run_iso, next_run_iso=None, running=Fals
         if counts.get(s)
     )
 
+    swept_ids = {u.download_id for u in result.unlinked_downloads if u.download_id}
+    copied_only = [
+        f for f in result.import_findings
+        if f.status == "copied" and f.download_id not in swept_ids
+    ]
+
     wasted_html = ""
-    if result.unlinked_downloads:
+    if wasted_bytes:
+        source_count = len(result.unlinked_downloads) + len(copied_only)
+        copied_rows = "".join(
+            f"<tr><td>{_esc(f.source_title)}</td><td>{_esc(f.service)}</td>"
+            f"<td class='num bad-num'>{human_size(f.size)}</td><td class='num'>{human_size(f.size)}</td></tr>"
+            for f in copied_only
+        )
         wasted_html = f"""
         <div class="wasted-hero">
           <div class="wasted-n">{human_size(wasted_bytes)}</div>
-          <div class="wasted-l">desperdiçados em {len(result.unlinked_downloads)} download(s) não linkados
-          (varredura direta do filesystem, não depende do histórico do *arr)</div>
+          <div class="wasted-l">desperdiçados em {source_count} download(s) não linkados</div>
         </div>
-        <table><thead><tr><th>Nome</th><th>Categoria</th><th>Sem link</th><th>Tamanho total</th></tr></thead>
-        <tbody>{_unlinked_rows(sorted(result.unlinked_downloads, key=lambda u: -u.unlinked_bytes))}</tbody></table>
+        <table><thead><tr><th>Nome</th><th>Categoria/Serviço</th><th>Sem link</th><th>Tamanho total</th></tr></thead>
+        <tbody>{_unlinked_rows(sorted(result.unlinked_downloads, key=lambda u: -u.unlinked_bytes))}{copied_rows}</tbody></table>
         """
 
     attention_html = (
