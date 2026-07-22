@@ -54,8 +54,6 @@ def _save_state():
 
 def _do_run():
     with _lock:
-        if _state["running"]:
-            return
         _state["running"] = True
     try:
         result, log_lines = run_audit()
@@ -99,15 +97,17 @@ def dashboard():
         except ValueError:
             pass
 
-    if running:
-        log_lines = log_lines + ["(rodando agora...)"]
-
-    return report.render_html(result, log_lines, last_run, next_run_iso)
+    return report.render_html(result, log_lines, last_run, next_run_iso, running=running)
 
 
 @app.post("/run")
 def trigger_run():
-    threading.Thread(target=_do_run, daemon=True).start()
+    with _lock:
+        already_running = _state["running"]
+        if not already_running:
+            _state["running"] = True
+    if not already_running:
+        threading.Thread(target=_do_run, daemon=True).start()
     return RedirectResponse(url="/", status_code=303)
 
 
