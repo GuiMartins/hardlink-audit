@@ -39,15 +39,29 @@ class OrphanTorrent:
 
 
 @dataclass
+class UnlinkedDownload:
+    """A completed, *arr-categorized torrent whose data (per a direct
+    filesystem check) isn't hardlinked to anything else - found by walking
+    the download folder directly, independent of *arr's history log."""
+    name: str
+    category: str
+    download_id: str
+    unlinked_bytes: int
+    total_bytes: int
+
+
+@dataclass
 class AuditResult:
     import_findings: list = field(default_factory=list)
     orphan_torrents: list = field(default_factory=list)
+    unlinked_downloads: list = field(default_factory=list)
     errors: list = field(default_factory=list)  # (context, message) pairs - non-fatal problems to surface
 
     def to_dict(self):
         return {
             "import_findings": [asdict(f) for f in self.import_findings],
             "orphan_torrents": [asdict(t) for t in self.orphan_torrents],
+            "unlinked_downloads": [asdict(u) for u in self.unlinked_downloads],
             "errors": [list(e) for e in self.errors],
         }
 
@@ -56,8 +70,12 @@ class AuditResult:
         return cls(
             import_findings=[ImportFinding(**f) for f in data.get("import_findings", [])],
             orphan_torrents=[OrphanTorrent(**t) for t in data.get("orphan_torrents", [])],
+            unlinked_downloads=[UnlinkedDownload(**u) for u in data.get("unlinked_downloads", [])],
             errors=[tuple(e) for e in data.get("errors", [])],
         )
+
+    def wasted_bytes(self):
+        return sum(u.unlinked_bytes for u in self.unlinked_downloads)
 
 
 def _stat(local_path):
@@ -208,3 +226,57 @@ def reclassify_relocated_downloads(result, resolvers_by_service, torrents, qbit_
                     "hardlink confirmado no local atual"
                 )
                 break
+
+
+def _iter_files(path):
+    if os.path.isdir(path):
+        for root, _dirs, files in os.walk(path):
+            for name in files:
+                yield os.path.join(root, name)
+    elif os.path.isfile(path):
+        yield path
+
+
+def scan_download_folder_links(torrents, qbit_resolver, result, known_download_ids, categories=("radarr", "sonarr")):
+    """Ground-truth pass: for every completed torrent that *arr's history
+    confirms was actually imported at some point, walk its files on disk and
+    check nlink directly. nlink<2 means that file's bytes aren't shared with
+    the library copy - real wasted space - regardless of whether the
+    history-based per-import check still has a live record of it (history
+    entries can get pruned over time).
+
+    Deliberately excludes torrents *arr never imported (no history record at
+    all) - those aren't "wasted", they're either not-yet-imported or
+    abandoned downloads with no library counterpart to have linked to; they
+    already surface via find_orphan_torrents() instead."""
+    if not torrents or not qbit_resolver:
+        return
+    for t in torrents:
+        if t.get("category") not in categories:
+            continue
+        if t.get("progress", 0) < 1:
+            continue
+        if (t.get("hash") or "").upper() not in known_download_ids:
+            continue
+        local = qbit_resolver.to_local_path(t.get("content_path") or "")
+        if not local:
+            continue
+        unlinked_bytes = 0
+        total_bytes = 0
+        for fpath in _iter_files(local):
+            st = _stat(fpath)
+            if st is None:
+                continue
+            total_bytes += st.st_size
+            if st.st_nlink < 2:
+                unlinked_bytes += st.st_size
+        if unlinked_bytes > 0:
+            result.unlinked_downloads.append(
+                UnlinkedDownload(
+                    name=t.get("name", "?"),
+                    category=t.get("category", "?"),
+                    download_id=(t.get("hash") or "").upper(),
+                    unlinked_bytes=unlinked_bytes,
+                    total_bytes=total_bytes,
+                )
+            )
