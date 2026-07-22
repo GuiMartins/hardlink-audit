@@ -13,16 +13,28 @@ services:
       HOST_ROOT_MOUNT: /hostroot
       DATA_DIR: /data
       HA_INTERVAL_HOURS: "6"
-    x-casaos:
-      title:
-        en_us: hardlink-audit
-        pt_br: hardlink-audit
-      category: Utilities
-      port_map: "8990"
-      scheme: http
-      index: /
-      description:
-        en_us: Audits hardlink integrity between qBittorrent and Radarr/Sonarr
-        pt_br: Audita integridade de hardlink entre qBittorrent e Radarr/Sonarr
-      main: hardlink-audit
-      author: local
+x-casaos:
+  architectures:
+    - amd64
+    - arm64
+  id: com.guimartins.hardlink-audit
+  main: hardlink-audit
+  description:
+    en_US: Audits hardlink integrity between qBittorrent and Radarr/Sonarr
+    pt_BR: Audita integridade de hardlink entre qBittorrent e Radarr/Sonarr
+  tagline:
+    en_US: Hardlink integrity audit for qBittorrent + Radarr/Sonarr
+    pt_BR: Auditoria de hardlink entre qBittorrent e Radarr/Sonarr
+  developer: GuiMartins
+  author: GuiMartins
+  icon: https://raw.githubusercontent.com/GuiMartins/casaos-appstore/main/Apps/hardlink-audit/icon.svg
+  thumbnail: ""
+  title:
+    en_US: hardlink-audit
+  category: Utilities
+  port_map: "8990"
+  scheme: http
+  index: /
+
+# Deployed via the personal CasaOS app store: github.com/GuiMartins/casaos-appstore
+# (Apps/hardlink-audit/docker-compose.yml is the source of truth for what's installed)
