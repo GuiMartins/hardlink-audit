@@ -75,7 +75,17 @@ class AuditResult:
         )
 
     def wasted_bytes(self):
-        return sum(u.unlinked_bytes for u in self.unlinked_downloads)
+        """Total confirmed-wasted bytes from BOTH detection paths: the
+        direct filesystem scan (unlinked_downloads) and the history-based
+        per-import check (status == "copied"). Dedupe by download_id so a
+        case both paths independently catch isn't counted twice."""
+        swept_ids = {u.download_id for u in self.unlinked_downloads if u.download_id}
+        from_scan = sum(u.unlinked_bytes for u in self.unlinked_downloads)
+        from_history = sum(
+            f.size for f in self.import_findings
+            if f.status == "copied" and f.download_id not in swept_ids
+        )
+        return from_scan + from_history
 
 
 def _stat(local_path):
@@ -237,13 +247,21 @@ def _iter_files(path):
         yield path
 
 
-def scan_download_folder_links(torrents, qbit_resolver, result, known_download_ids, categories=("radarr", "sonarr")):
+def scan_download_folder_links(torrents, qbit_resolver, result, known_download_ids):
     """Ground-truth pass: for every completed torrent that *arr's history
     confirms was actually imported at some point, walk its files on disk and
     check nlink directly. nlink<2 means that file's bytes aren't shared with
     the library copy - real wasted space - regardless of whether the
     history-based per-import check still has a live record of it (history
     entries can get pruned over time).
+
+    Scoped by known_download_ids alone (no category filter): category names
+    are user-customizable per *arr instance (Sonarr's own suggested default
+    is "tv-sonarr", not "sonarr") and a hardcoded guess here previously made
+    this pass blind to an entire instance's torrents whenever the category
+    didn't match. known_download_ids is already the authoritative "*arr
+    actually imported this" signal - a category check on top added nothing
+    but a way to be wrong.
 
     Deliberately excludes torrents *arr never imported (no history record at
     all) - those aren't "wasted", they're either not-yet-imported or
@@ -252,8 +270,6 @@ def scan_download_folder_links(torrents, qbit_resolver, result, known_download_i
     if not torrents or not qbit_resolver:
         return
     for t in torrents:
-        if t.get("category") not in categories:
-            continue
         if t.get("progress", 0) < 1:
             continue
         if (t.get("hash") or "").upper() not in known_download_ids:

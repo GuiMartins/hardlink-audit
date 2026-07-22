@@ -116,7 +116,11 @@ class ArrInstance:
     def current_file_ids(self):
         """IDs of files that are still the active file for a movie/episode
         today - used to tell a real problem apart from a stale history
-        record for a file that was since replaced by a quality upgrade."""
+        record for a file that was since replaced by a quality upgrade.
+
+        Sonarr requires one /api/v3/episodefile call per series (no bulk
+        endpoint) - a single series failing shouldn't blank out the whole
+        set and disable supersede-filtering for every other series."""
         ids = set()
         if self.kind == "radarr":
             for movie in self._get("/api/v3/movie"):
@@ -124,7 +128,10 @@ class ArrInstance:
                     ids.add(str(movie["movieFileId"]))
         else:
             for series in self._get("/api/v3/series"):
-                files = self._get("/api/v3/episodefile", seriesId=series["id"])
+                try:
+                    files = self._get("/api/v3/episodefile", seriesId=series["id"])
+                except Exception:  # noqa: BLE001 - one bad series shouldn't blank the whole set
+                    continue
                 for f in files:
                     if f.get("id"):
                         ids.add(str(f["id"]))
