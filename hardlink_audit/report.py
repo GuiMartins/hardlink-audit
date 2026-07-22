@@ -94,44 +94,64 @@ def render_text(result):
 
 _STATUS_LABEL = {
     "ok": ("OK", "ok"),
-    "copied": ("Copiado (desperdiçando espaço)", "bad"),
+    "copied": ("Copiado", "bad"),
     "cross_filesystem": ("Filesystems diferentes", "bad"),
     "missing_dropped": ("Torrent sumiu", "warn"),
-    "missing_imported": ("Arquivo sumiu da library", "bad"),
+    "missing_imported": ("Arquivo sumiu", "bad"),
     "unresolved": ("Path não resolvido", "warn"),
-    "superseded": ("Obsoleto (upgrade posterior)", "muted"),
+    "superseded": ("Obsoleto", "muted"),
 }
+
+ATTENTION_STATUSES = ("copied", "cross_filesystem", "missing_dropped", "missing_imported", "unresolved")
 
 
 def _esc(value):
     return html.escape(str(value if value is not None else ""))
 
 
-def _finding_rows(findings):
+def _finding_rows(findings, with_detail=True):
     rows = []
     for f in findings:
         label, cls = _STATUS_LABEL.get(f.status, (f.status, "warn"))
+        detail_cell = f"<td class='detail'>{_esc(f.detail)}</td>" if with_detail else ""
         rows.append(
             f"<tr><td><span class='badge {cls}'>{_esc(label)}</span></td>"
             f"<td>{_esc(f.service)}</td>"
             f"<td>{_esc(f.source_title)}</td>"
-            f"<td>{human_size(f.size)}</td>"
-            f"<td class='detail'>{_esc(f.detail)}</td></tr>"
+            f"<td class='num'>{human_size(f.size)}</td>"
+            f"{detail_cell}</tr>"
         )
     return "\n".join(rows)
+
+
+def _compact_table(findings, extra_head="", with_detail=True):
+    if not findings:
+        return "<p class='muted'>Nenhum.</p>"
+    head_detail = "<th>Detalhe</th>" if with_detail else ""
+    return (
+        f"<table><thead><tr><th>Status</th><th>Serviço</th><th>Título</th>"
+        f"<th>Tamanho</th>{head_detail}</tr></thead><tbody>"
+        + _finding_rows(findings, with_detail) +
+        "</tbody></table>"
+    )
 
 
 def render_html(result, log_lines, last_run_iso, next_run_iso=None):
     counts = Counter(f.status for f in result.import_findings)
     total = len(result.import_findings)
-    bad = [f for f in result.import_findings if f.status in
-           ("copied", "cross_filesystem", "missing_dropped", "missing_imported", "unresolved")]
-    ok_count = counts.get("ok", 0)
+
+    attention = sorted(
+        (f for f in result.import_findings if f.status in ATTENTION_STATUSES),
+        key=lambda f: f.date or "",
+        reverse=True,
+    )
+    ok_findings = [f for f in result.import_findings if f.status == "ok"]
+    superseded_findings = [f for f in result.import_findings if f.status == "superseded"]
 
     banner = (
         "<div class='banner ok'>Tudo linkado corretamente.</div>"
-        if not bad and not result.errors
-        else f"<div class='banner bad'>{len(bad)} problema(s) encontrado(s).</div>"
+        if not attention and not result.errors
+        else f"<div class='banner bad'>{len(attention)} problema(s) encontrado(s).</div>"
     )
 
     cards = "".join(
@@ -140,35 +160,44 @@ def render_html(result, log_lines, last_run_iso, next_run_iso=None):
         if counts.get(s)
     )
 
-    findings_sorted = sorted(
-        result.import_findings,
-        key=lambda f: (f.status == "ok", f.status == "superseded", f.date or ""),
-    )
-    findings_table = (
-        "<table><thead><tr><th>Status</th><th>Serviço</th><th>Título</th>"
-        "<th>Tamanho</th><th>Detalhe</th></tr></thead><tbody>"
-        + _finding_rows(findings_sorted) +
-        "</tbody></table>"
-        if findings_sorted else "<p class='muted'>Nenhum import auditado ainda.</p>"
+    attention_html = (
+        _compact_table(attention)
+        if attention else "<p class='muted'>Nada precisando de atenção.</p>"
     )
 
     orphans_html = ""
     if result.orphan_torrents:
         wasted = sum(t.size for t in result.orphan_torrents)
         rows = "".join(
-            f"<tr><td>{_esc(t.name)}</td><td>{_esc(t.state)}</td><td>{human_size(t.size)}</td></tr>"
+            f"<tr><td>{_esc(t.name)}</td><td>{_esc(t.state)}</td><td class='num'>{human_size(t.size)}</td></tr>"
             for t in result.orphan_torrents
         )
         orphans_html = f"""
-        <h2>Torrents sem import correspondente ({len(result.orphan_torrents)}, ~{human_size(wasted)})</h2>
+        <details>
+        <summary>Torrents sem import correspondente ({len(result.orphan_torrents)}, ~{human_size(wasted)})</summary>
         <table><thead><tr><th>Nome</th><th>Estado</th><th>Tamanho</th></tr></thead>
         <tbody>{rows}</tbody></table>
+        </details>
         """
 
     errors_html = ""
     if result.errors:
         rows = "".join(f"<li><b>{_esc(ctx)}</b>: {_esc(msg)}</li>" for ctx, msg in result.errors)
         errors_html = f"<h2>Avisos</h2><ul class='errors'>{rows}</ul>"
+
+    ok_html = f"""
+    <details>
+    <summary>{len(ok_findings)} linkados corretamente</summary>
+    {_compact_table(ok_findings, with_detail=False)}
+    </details>
+    """ if ok_findings else ""
+
+    superseded_html = f"""
+    <details>
+    <summary>{len(superseded_findings)} obsoletos (substituídos por upgrade de qualidade)</summary>
+    {_compact_table(superseded_findings, with_detail=False)}
+    </details>
+    """ if superseded_findings else ""
 
     log_html = "<br>".join(_esc(line) for line in log_lines)
 
@@ -177,22 +206,31 @@ def render_html(result, log_lines, last_run_iso, next_run_iso=None):
 <title>hardlink-audit</title>
 <style>
 :root {{ color-scheme: light dark; }}
+* {{ box-sizing: border-box; }}
 body {{ font-family: -apple-system, Segoe UI, sans-serif; margin: 0; padding: 2rem;
-        background: #0f1115; color: #e6e6e6; }}
+        background: #0f1115; color: #e6e6e6; max-width: 1100px; }}
 @media (prefers-color-scheme: light) {{ body {{ background: #f7f7f8; color: #1a1a1a; }} }}
-h1 {{ font-size: 1.4rem; margin-bottom: .2rem; }}
-.meta {{ color: #888; font-size: .85rem; margin-bottom: 1.5rem; }}
+h1 {{ font-size: 1.4rem; margin: 0 0 .2rem; }}
+h2 {{ font-size: 1rem; margin: 1.8rem 0 .6rem; color: #aaa; text-transform: uppercase; letter-spacing: .04em; }}
+.meta {{ color: #888; font-size: .85rem; margin-bottom: 1.5rem; display: flex; align-items: center; gap: .8rem; flex-wrap: wrap; }}
 .banner {{ padding: .8rem 1rem; border-radius: 8px; font-weight: 600; margin-bottom: 1.5rem; }}
 .banner.ok {{ background: #1e3a2a; color: #7ee2a8; }}
 .banner.bad {{ background: #3a1e1e; color: #ff8a8a; }}
-.cards {{ display: flex; flex-wrap: wrap; gap: .75rem; margin-bottom: 1.5rem; }}
-.card {{ background: rgba(127,127,127,.12); border-radius: 8px; padding: .6rem 1rem; min-width: 90px; }}
-.card .n {{ font-size: 1.3rem; font-weight: 700; }}
-.card .l {{ font-size: .75rem; color: #999; }}
-table {{ width: 100%; border-collapse: collapse; font-size: .85rem; margin-bottom: 1.5rem; }}
-th, td {{ text-align: left; padding: .4rem .6rem; border-bottom: 1px solid rgba(127,127,127,.2); }}
-td.detail {{ color: #999; }}
-.badge {{ padding: .15rem .5rem; border-radius: 999px; font-size: .75rem; font-weight: 600; }}
+.cards {{ display: flex; flex-wrap: wrap; gap: .75rem; margin-bottom: .5rem; }}
+.card {{ background: rgba(127,127,127,.1); border: 1px solid rgba(127,127,127,.18);
+         border-radius: 10px; padding: .7rem 1.1rem; min-width: 100px; }}
+.card .n {{ font-size: 1.4rem; font-weight: 700; line-height: 1.1; }}
+.card .l {{ font-size: .72rem; color: #999; margin-top: .15rem; }}
+table {{ width: 100%; border-collapse: collapse; font-size: .85rem; }}
+th {{ text-align: left; padding: .5rem .6rem; font-size: .72rem; text-transform: uppercase;
+      letter-spacing: .03em; color: #888; border-bottom: 1px solid rgba(127,127,127,.25); }}
+td {{ text-align: left; padding: .55rem .6rem; border-bottom: 1px solid rgba(127,127,127,.12);
+      vertical-align: top; }}
+td.num {{ white-space: nowrap; color: #aaa; }}
+td.detail {{ color: #999; font-size: .8rem; }}
+tr:last-child td {{ border-bottom: none; }}
+.badge {{ display: inline-block; white-space: nowrap; padding: .2rem .6rem; border-radius: 999px;
+          font-size: .72rem; font-weight: 600; }}
 .badge.ok {{ background: #1e3a2a; color: #7ee2a8; }}
 .badge.bad {{ background: #3a1e1e; color: #ff8a8a; }}
 .badge.warn {{ background: #3a331e; color: #f0c674; }}
@@ -200,23 +238,29 @@ td.detail {{ color: #999; }}
 .muted {{ color: #888; }}
 form {{ display: inline; }}
 button {{ background: #3d6bde; color: white; border: none; padding: .5rem 1.1rem;
-          border-radius: 6px; font-size: .9rem; cursor: pointer; }}
+          border-radius: 6px; font-size: .85rem; cursor: pointer; }}
 button:hover {{ background: #4d7bee; }}
 .errors li {{ margin-bottom: .3rem; }}
-details {{ margin-top: 2rem; color: #888; font-size: .8rem; }}
+details {{ margin-top: .8rem; }}
+details > summary {{ cursor: pointer; color: #999; font-size: .85rem; padding: .4rem 0; user-select: none; }}
+details > summary:hover {{ color: #ccc; }}
+details table {{ margin-top: .5rem; }}
+details.log {{ margin-top: 2.5rem; color: #777; font-size: .8rem; border-top: 1px solid rgba(127,127,127,.15); padding-top: .5rem; }}
 </style></head>
 <body>
 <h1>hardlink-audit</h1>
 <div class="meta">
-  última rodada: {_esc(last_run_iso) or 'nunca'}
-  {f' · próxima automática: {_esc(next_run_iso)}' if next_run_iso else ''}
-  &nbsp;&nbsp;<form method="post" action="/run"><button type="submit">Rodar agora</button></form>
+  <span>última rodada: {_esc(last_run_iso) or 'nunca'}</span>
+  {f'<span>· próxima automática: {_esc(next_run_iso)}</span>' if next_run_iso else ''}
+  <form method="post" action="/run"><button type="submit">Rodar agora</button></form>
 </div>
 {banner}
 <div class="cards">{cards}</div>
 {errors_html}
-<h2>Imports ({total}, {ok_count} ok)</h2>
-{findings_table}
+<h2>Precisa de atenção ({len(attention)})</h2>
+{attention_html}
 {orphans_html}
-<details><summary>log de descoberta</summary><p>{log_html}</p></details>
+{ok_html}
+{superseded_html}
+<details class="log"><summary>log de descoberta</summary><p>{log_html}</p></details>
 </body></html>"""
