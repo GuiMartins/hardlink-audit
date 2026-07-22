@@ -256,12 +256,25 @@ def render_html(result, log_lines, last_run_iso, next_run_iso=None, running=Fals
     return f"""<!doctype html>
 <html><head><meta charset="utf-8">
 <title>hardlink-audit</title>
+<script>
+(function() {{
+  var saved = localStorage.getItem('theme');
+  if (saved) document.documentElement.setAttribute('data-theme', saved);
+}})();
+</script>
 <style>
 :root {{ color-scheme: light dark; }}
 * {{ box-sizing: border-box; }}
 body {{ font-family: -apple-system, Segoe UI, sans-serif; margin: 0; padding: 2rem;
         background: #0f1115; color: #e6e6e6; max-width: 1100px; }}
-@media (prefers-color-scheme: light) {{ body {{ background: #f7f7f8; color: #1a1a1a; }} }}
+@media (prefers-color-scheme: light) {{
+  :root:not([data-theme]) body {{ background: #f7f7f8; color: #1a1a1a; }}
+}}
+:root[data-theme="light"] body {{ background: #f7f7f8; color: #1a1a1a; }}
+:root[data-theme="dark"] body {{ background: #0f1115; color: #e6e6e6; }}
+#theme-btn {{ background: transparent; border: 1px solid rgba(127,127,127,.3); color: inherit;
+              padding: .4rem .7rem; }}
+#theme-btn:hover {{ background: rgba(127,127,127,.15); }}
 h1 {{ font-size: 1.4rem; margin: 0 0 .2rem; }}
 h2 {{ font-size: 1rem; margin: 1.8rem 0 .6rem; color: #aaa; text-transform: uppercase; letter-spacing: .04em; }}
 .meta {{ color: #888; font-size: .85rem; margin-bottom: 1.5rem; display: flex; align-items: center; gap: .8rem; flex-wrap: wrap; }}
@@ -317,6 +330,7 @@ details.log {{ margin-top: 2.5rem; color: #777; font-size: .8rem; border-top: 1p
   <form method="post" action="/run" id="run-form">
     <button type="submit" id="run-btn" {"disabled" if running else ""}>{"Rodando..." if running else "Rodar agora"}</button>
   </form>
+  <button type="button" id="theme-btn">Tema</button>
 </div>
 {banner}
 <div class="cards">{cards}</div>
@@ -334,6 +348,24 @@ document.getElementById('run-form').addEventListener('submit', function() {{
   btn.disabled = true;
   btn.textContent = 'Rodando...';
 }});
+
+(function() {{
+  var prefersLight = window.matchMedia('(prefers-color-scheme: light)').matches;
+  var themeBtn = document.getElementById('theme-btn');
+  function currentTheme() {{
+    return document.documentElement.getAttribute('data-theme') || (prefersLight ? 'light' : 'dark');
+  }}
+  function updateLabel() {{
+    themeBtn.textContent = currentTheme() === 'light' ? 'Modo escuro' : 'Modo claro';
+  }}
+  themeBtn.addEventListener('click', function() {{
+    var next = currentTheme() === 'light' ? 'dark' : 'light';
+    document.documentElement.setAttribute('data-theme', next);
+    localStorage.setItem('theme', next);
+    updateLabel();
+  }});
+  updateLabel();
+}})();
 {"""
 (function poll() {
   fetch('/api/last-result').then(r => r.json()).then(d => {
