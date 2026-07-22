@@ -13,6 +13,7 @@ as the source of an import (orphans) - informational, since *arr history
 can be pruned/limited, so absence isn't proof of anything.
 """
 import os
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 
 
@@ -266,15 +267,24 @@ def scan_download_folder_links(torrents, qbit_resolver, result, known_download_i
     Deliberately excludes torrents *arr never imported (no history record at
     all) - those aren't "wasted", they're either not-yet-imported or
     abandoned downloads with no library counterpart to have linked to; they
-    already surface via find_orphan_torrents() instead."""
+    already surface via find_orphan_torrents() instead.
+
+    Also skips any content_path shared by more than one torrent (possible
+    with a "no subfolder" save layout, where several torrents' files sit
+    directly in the same category folder) - walking it per-torrent would
+    misattribute every torrent sharing that path with each other's bytes."""
     if not torrents or not qbit_resolver:
         return
+    shared_paths = Counter(t.get("content_path") for t in torrents if t.get("content_path"))
     for t in torrents:
         if t.get("progress", 0) < 1:
             continue
         if (t.get("hash") or "").upper() not in known_download_ids:
             continue
-        local = qbit_resolver.to_local_path(t.get("content_path") or "")
+        content_path = t.get("content_path") or ""
+        if shared_paths.get(content_path, 0) > 1:
+            continue
+        local = qbit_resolver.to_local_path(content_path)
         if not local:
             continue
         unlinked_bytes = 0

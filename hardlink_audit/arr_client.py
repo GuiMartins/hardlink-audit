@@ -77,7 +77,15 @@ class ArrInstance:
 
     def import_events(self):
         """Yield {download_id, source_title, date, dropped_path, imported_path}
-        for every downloadFolderImported event in history (paginated)."""
+        for every downloadFolderImported event in history (paginated).
+
+        Offset-based paging against a live, date-descending-sorted table:
+        new rows landing mid-pagination can shift the list and land the same
+        record on two pages. Dedupe by the record's own stable "id" to guard
+        against double-counting (a row shifting the OTHER way and getting
+        skipped entirely is still possible, but self-heals on the next
+        run - not worth a stable-cursor rewrite for that)."""
+        seen_ids = set()
         page = 1
         page_size = 250
         while True:
@@ -92,6 +100,11 @@ class ArrInstance:
             if not records:
                 return
             for rec in records:
+                rec_id = rec.get("id")
+                if rec_id is not None:
+                    if rec_id in seen_ids:
+                        continue
+                    seen_ids.add(rec_id)
                 if rec.get("eventType") != "downloadFolderImported":
                     continue
                 d = rec.get("data", {})

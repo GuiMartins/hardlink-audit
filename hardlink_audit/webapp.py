@@ -67,16 +67,37 @@ def _do_run():
         _save_state()
 
 
+def _seconds_until_due():
+    """0 if a run is due now (never run, or the interval has elapsed since
+    last_run - which includes catching up after the container was restarted
+    for a while, not just blindly waiting a fresh full interval)."""
+    with _lock:
+        last_run = _state["last_run"]
+    if not last_run:
+        return 0
+    try:
+        last_dt = datetime.fromisoformat(last_run)
+    except ValueError:
+        return 0
+    due_at = last_dt + timedelta(hours=INTERVAL_HOURS)
+    return max(0, (due_at - datetime.now(timezone.utc)).total_seconds())
+
+
 def _scheduler_loop():
     while True:
-        time.sleep(INTERVAL_HOURS * 3600)
+        wait = _seconds_until_due()
+        if wait > 0:
+            time.sleep(wait)
+            continue
         _do_run()
 
 
 @app.on_event("startup")
 def on_startup():
     _load_state()
-    if _state["last_run"] is None:
+    if _seconds_until_due() <= 0:
+        with _lock:
+            _state["running"] = True
         threading.Thread(target=_do_run, daemon=True).start()
     threading.Thread(target=_scheduler_loop, daemon=True).start()
 
