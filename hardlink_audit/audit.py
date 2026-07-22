@@ -83,6 +83,26 @@ REASON_LABEL = {
     REASON_UNKNOWN: "Causa desconhecida",
 }
 
+# Reasons safe to offer one-click deletion for: in all three, a working
+# copy either still exists elsewhere (COPIED, SIDECAR_ONLY's video file is
+# hardlinked) or is expected to no longer matter (ORPHANED_UPGRADE - *arr
+# itself already deleted the library side on purpose). REASON_UNKNOWN is
+# deliberately excluded - that's exactly the "not sure a backup exists,
+# check by hand" case.
+DELETABLE_REASONS = {REASON_COPIED, REASON_ORPHANED_UPGRADE, REASON_SIDECAR_ONLY}
+
+
+def is_download_id_deletable(result, download_id):
+    """A whole torrent is only offered for one-click delete if EVERY
+    unlinked file found in it has a safe reason - qBittorrent's delete API
+    removes the whole torrent's files at once, so a single unknown-reason
+    file anywhere in it blocks deletion of the lot, even for its own
+    safe-reason siblings."""
+    reasons = {u.reason for u in result.unlinked_downloads if u.download_id == download_id}
+    if not reasons:
+        return False
+    return reasons <= DELETABLE_REASONS
+
 
 @dataclass
 class UnlinkedDownload:

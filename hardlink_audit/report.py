@@ -2,7 +2,7 @@ import html
 from collections import Counter, defaultdict
 from datetime import datetime
 
-from .audit import REASON_COPIED, REASON_LABEL, REASON_TEXT
+from .audit import REASON_COPIED, REASON_LABEL, REASON_TEXT, is_download_id_deletable
 
 
 def human_size(n):
@@ -176,9 +176,21 @@ def _compact_table(findings, extra_head="", with_detail=True):
     )
 
 
-def _waste_card(name, subtitle, size_bytes, reason_key):
+def _waste_card(name, subtitle, size_bytes, reason_key, download_id=None, deletable=False):
     label = REASON_LABEL.get(reason_key, reason_key)
     why, action = REASON_TEXT.get(reason_key, ("", ""))
+    delete_html = ""
+    if deletable and download_id:
+        confirm_msg = (
+            f"Apagar o torrent e os arquivos na pasta de download de {name}? "
+            "Isso NÃO afeta a cópia na library."
+        ).replace("'", "\\'")
+        delete_html = f"""
+        <form method="post" action="/delete/{_esc(download_id)}" class="delete-form"
+              onsubmit="return confirm('{_esc(confirm_msg)}');">
+          <button type="submit" class="delete-btn">Apagar da pasta de download</button>
+        </form>
+        """
     return f"""
     <div class="waste-item">
       <div class="waste-head">
@@ -189,6 +201,7 @@ def _waste_card(name, subtitle, size_bytes, reason_key):
       </div>
       <p class="waste-why">{_esc(why)}</p>
       <p class="waste-action"><b>O que fazer:</b> {_esc(action)}</p>
+      {delete_html}
     </div>
     """
 
@@ -233,7 +246,11 @@ def render_html(result, log_lines, last_run_iso, next_run_iso=None, running=Fals
     if wasted_bytes:
         source_count = len(result.unlinked_downloads) + len(copied_only)
         swept_cards = "".join(
-            _waste_card(u.name, u.category, u.unlinked_bytes, u.reason)
+            _waste_card(
+                u.name, u.category, u.unlinked_bytes, u.reason,
+                download_id=u.download_id,
+                deletable=is_download_id_deletable(result, u.download_id),
+            )
             for u in sorted(result.unlinked_downloads, key=lambda u: -u.unlinked_bytes)
         )
         copied_cards = "".join(
@@ -339,12 +356,15 @@ td.bad-num {{ color: #ff8a8a; font-weight: 600; }}
 .wasted-hero .wasted-n {{ font-size: 2rem; font-weight: 800; color: #ff8a8a; line-height: 1.1; }}
 .wasted-hero .wasted-l {{ font-size: .8rem; color: #999; margin-top: .3rem; }}
 .waste-item {{ background: rgba(127,127,127,.06); border: 1px solid rgba(127,127,127,.15);
-               border-radius: 8px; padding: .8rem 1rem; margin-bottom: .6rem; }}
-.waste-head {{ display: flex; align-items: baseline; gap: .5rem; flex-wrap: wrap; }}
+               border-radius: 10px; padding: 1.1rem 1.3rem; margin-bottom: 1rem; }}
+.waste-head {{ display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; margin-bottom: .7rem; }}
 .waste-sub {{ color: #888; font-size: .78rem; }}
-.waste-size {{ margin-left: auto; }}
-.waste-why {{ margin: .5rem 0 0; font-size: .83rem; }}
-.waste-action {{ margin: .35rem 0 0; color: #999; font-size: .8rem; }}
+.waste-size {{ margin-left: auto; font-size: 1rem; }}
+.waste-why {{ margin: 0 0 .6rem; font-size: .85rem; line-height: 1.5; }}
+.waste-action {{ margin: 0; color: #999; font-size: .82rem; line-height: 1.5; }}
+.delete-form {{ display: block; margin-top: 1rem; }}
+.delete-btn {{ background: #7a2020; font-size: .78rem; padding: .45rem .9rem; }}
+.delete-btn:hover {{ background: #9a2828; }}
 td.detail {{ color: #999; font-size: .8rem; }}
 tr:last-child td {{ border-bottom: none; }}
 .badge {{ display: inline-block; white-space: nowrap; padding: .2rem .6rem; border-radius: 999px;
