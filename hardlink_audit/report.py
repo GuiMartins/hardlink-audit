@@ -15,6 +15,18 @@ def render_text(result):
     counts = Counter(f.status for f in result.import_findings)
     total = len(result.import_findings)
 
+    if result.unlinked_downloads:
+        wasted = result.wasted_bytes()
+        lines.append(
+            f"ESPAÇO DESPERDIÇADO (varredura direta): ~{human_size(wasted)} em "
+            f"{len(result.unlinked_downloads)} download(s) não linkados"
+        )
+        for u in sorted(result.unlinked_downloads, key=lambda u: -u.unlinked_bytes)[:20]:
+            lines.append(f"  [{u.category}] {u.name}: ~{human_size(u.unlinked_bytes)} sem link")
+        if len(result.unlinked_downloads) > 20:
+            lines.append(f"  ... e mais {len(result.unlinked_downloads) - 20}")
+        lines.append("")
+
     lines.append(f"== {total} imports auditados ==")
     for status in ("ok", "copied", "cross_filesystem", "missing_dropped", "missing_imported", "unresolved", "superseded"):
         if counts.get(status):
@@ -86,7 +98,7 @@ def render_text(result):
             lines.append(f"  [{context}] {message}")
         lines.append("")
 
-    if not any([structural, copied, missing, unresolved, result.errors]):
+    if not any([structural, copied, missing, unresolved, result.unlinked_downloads, result.errors]):
         lines.append("Tudo linkado corretamente. Nada a reportar.")
 
     return "\n".join(lines)
@@ -136,6 +148,17 @@ def _compact_table(findings, extra_head="", with_detail=True):
     )
 
 
+def _unlinked_rows(items):
+    rows = []
+    for u in items:
+        rows.append(
+            f"<tr><td>{_esc(u.name)}</td><td>{_esc(u.category)}</td>"
+            f"<td class='num bad-num'>{human_size(u.unlinked_bytes)}</td>"
+            f"<td class='num'>{human_size(u.total_bytes)}</td></tr>"
+        )
+    return "\n".join(rows)
+
+
 def render_html(result, log_lines, last_run_iso, next_run_iso=None):
     counts = Counter(f.status for f in result.import_findings)
     total = len(result.import_findings)
@@ -147,11 +170,14 @@ def render_html(result, log_lines, last_run_iso, next_run_iso=None):
     )
     ok_findings = [f for f in result.import_findings if f.status == "ok"]
     superseded_findings = [f for f in result.import_findings if f.status == "superseded"]
+    wasted_bytes = result.wasted_bytes()
 
+    problem_count = len(attention) + len(result.unlinked_downloads)
     banner = (
-        "<div class='banner ok'>Tudo linkado corretamente.</div>"
-        if not attention and not result.errors
-        else f"<div class='banner bad'>{len(attention)} problema(s) encontrado(s).</div>"
+        "<div class='banner ok'>Tudo linkado corretamente. Nenhum espaço desperdiçado encontrado.</div>"
+        if not problem_count and not result.errors
+        else f"<div class='banner bad'>{problem_count} problema(s) encontrado(s)"
+             f"{f' · ~{human_size(wasted_bytes)} desperdiçados' if wasted_bytes else ''}.</div>"
     )
 
     cards = "".join(
@@ -159,6 +185,18 @@ def render_html(result, log_lines, last_run_iso, next_run_iso=None):
         for s, (label, _cls) in _STATUS_LABEL.items()
         if counts.get(s)
     )
+
+    wasted_html = ""
+    if result.unlinked_downloads:
+        wasted_html = f"""
+        <div class="wasted-hero">
+          <div class="wasted-n">{human_size(wasted_bytes)}</div>
+          <div class="wasted-l">desperdiçados em {len(result.unlinked_downloads)} download(s) não linkados
+          (varredura direta do filesystem, não depende do histórico do *arr)</div>
+        </div>
+        <table><thead><tr><th>Nome</th><th>Categoria</th><th>Sem link</th><th>Tamanho total</th></tr></thead>
+        <tbody>{_unlinked_rows(sorted(result.unlinked_downloads, key=lambda u: -u.unlinked_bytes))}</tbody></table>
+        """
 
     attention_html = (
         _compact_table(attention)
@@ -227,6 +265,11 @@ th {{ text-align: left; padding: .5rem .6rem; font-size: .72rem; text-transform:
 td {{ text-align: left; padding: .55rem .6rem; border-bottom: 1px solid rgba(127,127,127,.12);
       vertical-align: top; }}
 td.num {{ white-space: nowrap; color: #aaa; }}
+td.bad-num {{ color: #ff8a8a; font-weight: 600; }}
+.wasted-hero {{ background: rgba(255,138,138,.08); border: 1px solid rgba(255,138,138,.25);
+                border-radius: 10px; padding: 1rem 1.2rem; margin-bottom: .8rem; }}
+.wasted-hero .wasted-n {{ font-size: 2rem; font-weight: 800; color: #ff8a8a; line-height: 1.1; }}
+.wasted-hero .wasted-l {{ font-size: .8rem; color: #999; margin-top: .3rem; }}
 td.detail {{ color: #999; font-size: .8rem; }}
 tr:last-child td {{ border-bottom: none; }}
 .badge {{ display: inline-block; white-space: nowrap; padding: .2rem .6rem; border-radius: 999px;
@@ -257,6 +300,7 @@ details.log {{ margin-top: 2.5rem; color: #777; font-size: .8rem; border-top: 1p
 {banner}
 <div class="cards">{cards}</div>
 {errors_html}
+{f'<h2>Espaço desperdiçado</h2>{wasted_html}' if wasted_html else ''}
 <h2>Precisa de atenção ({len(attention)})</h2>
 {attention_html}
 {orphans_html}
