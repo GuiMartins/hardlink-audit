@@ -30,6 +30,8 @@ class ImportFinding:
     size: int = 0
     detail: str = ""
     download_id: str = None
+    dropped_host_path: str = None
+    imported_host_path: str = None
 
 
 @dataclass
@@ -115,6 +117,7 @@ class UnlinkedDownload:
     unlinked_bytes: int
     total_bytes: int
     reason: str = REASON_UNKNOWN
+    paths: list = field(default_factory=list)
 
 
 @dataclass
@@ -180,6 +183,11 @@ def classify_import_event(service_name, event, resolver, current_file_ids=None):
 
     dropped_local = resolver.to_local_path(event["dropped_path"])
     imported_local = resolver.to_local_path(event["imported_path"])
+    # Host-side paths (no /hostroot prefix) - what the user can actually go
+    # look at on the real machine, as opposed to dropped_local/imported_local
+    # which only make sense from inside this tool's own container.
+    dropped_host = resolver.to_host_path(event["dropped_path"])
+    imported_host = resolver.to_host_path(event["imported_path"])
 
     base_kwargs = dict(
         service=service_name,
@@ -189,6 +197,8 @@ def classify_import_event(service_name, event, resolver, current_file_ids=None):
         imported_path=event["imported_path"],
         size=event["size"],
         download_id=event.get("download_id"),
+        dropped_host_path=dropped_host,
+        imported_host_path=imported_host,
     )
 
     if dropped_local is None or imported_local is None:
@@ -205,26 +215,26 @@ def classify_import_event(service_name, event, resolver, current_file_ids=None):
     if imported_stat is None:
         return ImportFinding(
             **base_kwargs, status="missing_imported",
-            detail=f"arquivo não existe mais na library: {imported_local}",
+            detail=f"arquivo não existe mais na library: {imported_host}",
         )
     if dropped_stat is None:
         return ImportFinding(
             **base_kwargs, status="missing_dropped",
-            detail=f"arquivo não existe mais no download: {dropped_local} "
+            detail=f"arquivo não existe mais no download: {dropped_host} "
                     "(torrent removido/movido/deletado fora do *arr)",
         )
     if dropped_stat.st_dev != imported_stat.st_dev:
         return ImportFinding(
             **base_kwargs, status="cross_filesystem",
-            detail=f"download e library estão em filesystems diferentes "
-                    f"(dev {dropped_stat.st_dev} vs {imported_stat.st_dev}) - "
+            detail=f"download ({dropped_host}) e library ({imported_host}) estão em "
+                    f"filesystems diferentes (dev {dropped_stat.st_dev} vs {imported_stat.st_dev}) - "
                     "hardlink é estruturalmente impossível aqui",
         )
     if dropped_stat.st_ino != imported_stat.st_ino:
         return ImportFinding(
             **base_kwargs, status="copied",
-            detail="mesmo filesystem mas inode diferente - virou cópia, não hardlink "
-                    f"(desperdiçando ~{event['size']} bytes)",
+            detail=f"cópia em {dropped_host} e em {imported_host} (mesmo filesystem, inode "
+                    f"diferente - virou cópia, não hardlink; desperdiçando ~{event['size']} bytes)",
         )
     return ImportFinding(**base_kwargs, status="ok")
 
@@ -299,8 +309,8 @@ def reclassify_relocated_downloads(result, resolvers_by_service, torrents, qbit_
             if current_stat and current_stat.st_dev == imported_stat.st_dev and current_stat.st_ino == imported_stat.st_ino:
                 f.status = "ok"
                 f.detail = (
-                    f"pasta de download foi reorganizada desde o import (agora em {current_local}), "
-                    "hardlink confirmado no local atual"
+                    f"pasta de download foi reorganizada desde o import (agora em "
+                    f"{qbit_resolver.to_host_path(candidate)}), hardlink confirmado no local atual"
                 )
                 break
 
@@ -375,11 +385,13 @@ def scan_download_folder_links(torrents, qbit_resolver, result, known_download_i
         if shared_paths.get(content_path, 0) > 1:
             continue
         local = qbit_resolver.to_local_path(content_path)
+        host_content_root = qbit_resolver.to_host_path(content_path)
         if not local:
             continue
 
         total_bytes = 0
         unlinked_by_reason = defaultdict(int)
+        paths_by_reason = defaultdict(list)
         for fpath in _iter_files(local):
             st = _stat(fpath)
             if st is None:
@@ -388,6 +400,9 @@ def scan_download_folder_links(torrents, qbit_resolver, result, known_download_i
             if st.st_nlink < 2:
                 reason = _reason_for(download_id, os.path.basename(fpath))
                 unlinked_by_reason[reason] += st.st_size
+                if host_content_root:
+                    rel = os.path.relpath(fpath, local)
+                    paths_by_reason[reason].append(os.path.normpath(os.path.join(host_content_root, rel)))
 
         for reason, unlinked_bytes in unlinked_by_reason.items():
             if unlinked_bytes > 0:
@@ -399,5 +414,6 @@ def scan_download_folder_links(torrents, qbit_resolver, result, known_download_i
                         unlinked_bytes=unlinked_bytes,
                         total_bytes=total_bytes,
                         reason=reason,
+                        paths=paths_by_reason.get(reason, [])[:10],
                     )
                 )
