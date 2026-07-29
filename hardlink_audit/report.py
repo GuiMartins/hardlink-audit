@@ -44,11 +44,16 @@ def render_text(result):
             lines.append(f"  [{u.category}] {u.name}: ~{human_size(u.unlinked_bytes)} sem link (varredura)")
             lines.append(f"    motivo: {why}")
             lines.append(f"    ação: {action}")
+            for p in u.paths:
+                lines.append(f"    path: {p}")
         for f in copied_only[:20]:
             why, action = REASON_TEXT[REASON_COPIED]
             lines.append(f"  [{f.service}] {f.source_title}: ~{human_size(f.size)} sem link (histórico)")
             lines.append(f"    motivo: {why}")
             lines.append(f"    ação: {action}")
+            for p in (f.dropped_host_path, f.imported_host_path):
+                if p:
+                    lines.append(f"    path: {p}")
         extra = (len(result.unlinked_downloads) - 20 if len(result.unlinked_downloads) > 20 else 0) + \
                 (len(copied_only) - 20 if len(copied_only) > 20 else 0)
         if extra > 0:
@@ -176,7 +181,7 @@ def _compact_table(findings, extra_head="", with_detail=True):
     )
 
 
-def _waste_card(name, subtitle, size_bytes, reason_key, download_id=None, deletable=False):
+def _waste_card(name, subtitle, size_bytes, reason_key, download_id=None, deletable=False, paths=None):
     label = REASON_LABEL.get(reason_key, reason_key)
     why, action = REASON_TEXT.get(reason_key, ("", ""))
     delete_html = ""
@@ -191,6 +196,10 @@ def _waste_card(name, subtitle, size_bytes, reason_key, download_id=None, deleta
           <button type="submit" class="delete-btn">Apagar da pasta de download</button>
         </form>
         """
+    paths_html = ""
+    if paths:
+        items = "".join(f"<li>{_esc(p)}</li>" for p in paths)
+        paths_html = f"<ul class='waste-paths'>{items}</ul>"
     return f"""
     <div class="waste-item">
       <div class="waste-head">
@@ -201,6 +210,7 @@ def _waste_card(name, subtitle, size_bytes, reason_key, download_id=None, deleta
       </div>
       <p class="waste-why">{_esc(why)}</p>
       <p class="waste-action"><b>O que fazer:</b> {_esc(action)}</p>
+      {paths_html}
       {delete_html}
     </div>
     """
@@ -250,11 +260,15 @@ def render_html(result, log_lines, last_run_iso, next_run_iso=None, running=Fals
                 u.name, u.category, u.unlinked_bytes, u.reason,
                 download_id=u.download_id,
                 deletable=is_download_id_deletable(result, u.download_id),
+                paths=u.paths,
             )
             for u in sorted(result.unlinked_downloads, key=lambda u: -u.unlinked_bytes)
         )
         copied_cards = "".join(
-            _waste_card(f.source_title, f.service, f.size, REASON_COPIED)
+            _waste_card(
+                f.source_title, f.service, f.size, REASON_COPIED,
+                paths=[p for p in (f.dropped_host_path, f.imported_host_path) if p],
+            )
             for f in sorted(copied_only, key=lambda f: -f.size)
         )
         wasted_html = f"""
@@ -362,6 +376,11 @@ td.bad-num {{ color: #ff8a8a; font-weight: 600; }}
 .waste-size {{ margin-left: auto; font-size: 1rem; }}
 .waste-why {{ margin: 0 0 .6rem; font-size: .85rem; line-height: 1.5; }}
 .waste-action {{ margin: 0; color: #999; font-size: .82rem; line-height: 1.5; }}
+.waste-paths {{ list-style: none; margin: .7rem 0 0; padding: 0; }}
+.waste-paths li {{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+                    font-size: .74rem; color: #888; background: rgba(127,127,127,.08);
+                    border-radius: 4px; padding: .3rem .5rem; margin-top: .3rem;
+                    word-break: break-all; }}
 .delete-form {{ display: block; margin-top: 1rem; }}
 .delete-btn {{ background: #7a2020; font-size: .78rem; padding: .45rem .9rem; }}
 .delete-btn:hover {{ background: #9a2828; }}
