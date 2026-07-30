@@ -113,6 +113,17 @@ def render_text(result):
             lines.append(f"  ... e mais {len(unresolved) - 10}")
         lines.append("")
 
+    if result.missing_seeds:
+        lines.append(
+            f"SEM SEED ({len(result.missing_seeds)}) - arquivo ativo na library, torrent não existe "
+            "mais no qBittorrent (só é problema se sua política for seed enquanto quiser o arquivo):"
+        )
+        for m in sorted(result.missing_seeds, key=lambda m: -m.size)[:20]:
+            lines.append(f"  [{m.service}] {m.title} ({human_size(m.size)}): {m.path}")
+        if len(result.missing_seeds) > 20:
+            lines.append(f"  ... e mais {len(result.missing_seeds) - 20}")
+        lines.append("")
+
     if result.orphan_torrents:
         wasted = sum(t.size for t in result.orphan_torrents)
         lines.append(
@@ -131,7 +142,7 @@ def render_text(result):
             lines.append(f"  [{context}] {message}")
         lines.append("")
 
-    if not any([structural, copied, missing, unresolved, result.unlinked_downloads, result.errors]):
+    if not any([structural, copied, missing, unresolved, result.unlinked_downloads, result.missing_seeds, result.errors]):
         lines.append("Tudo linkado corretamente. Nada a reportar.")
 
     return "\n".join(lines)
@@ -229,7 +240,7 @@ def render_html(result, log_lines, last_run_iso, next_run_iso=None, running=Fals
     superseded_findings = [f for f in result.import_findings if f.status == "superseded"]
     wasted_bytes = result.wasted_bytes()
 
-    problem_count = len(attention) + len(result.unlinked_downloads)
+    problem_count = len(attention) + len(result.unlinked_downloads) + len(result.missing_seeds)
     if running:
         banner = "<div class='banner running'><span class='spinner'></span> Rodando agora...</div>"
     elif not problem_count and not result.errors:
@@ -297,6 +308,22 @@ def render_html(result, log_lines, last_run_iso, next_run_iso=None, running=Fals
         <table><thead><tr><th>Nome</th><th>Estado</th><th>Tamanho</th></tr></thead>
         <tbody>{rows}</tbody></table>
         </details>
+        """
+
+    missing_seeds_html = ""
+    if result.missing_seeds:
+        rows = "".join(
+            f"<tr><td>{_esc(m.title)}</td><td>{_esc(m.service)}</td>"
+            f"<td class='num'>{human_size(m.size)}</td>"
+            f"<td class='detail'>{_esc(m.path)}</td></tr>"
+            for m in sorted(result.missing_seeds, key=lambda m: -m.size)
+        )
+        missing_seeds_html = f"""
+        <h2>Sem seed ({len(result.missing_seeds)})</h2>
+        <p class='muted'>Arquivo ativo na library, mas o torrent de origem não existe mais no qBittorrent -
+        só é um problema se sua política for manter o torrent seedando enquanto quiser o arquivo.</p>
+        <table><thead><tr><th>Título</th><th>Serviço</th><th>Tamanho</th><th>Path na library</th></tr></thead>
+        <tbody>{rows}</tbody></table>
         """
 
     errors_html = ""
@@ -420,6 +447,7 @@ details.log {{ margin-top: 2.5rem; color: #777; font-size: .8rem; border-top: 1p
 {f'<h2>Espaço desperdiçado</h2>{wasted_html}' if wasted_html else ''}
 <h2>Precisa de atenção ({len(attention)})</h2>
 {attention_html}
+{missing_seeds_html}
 {orphans_html}
 {ok_html}
 {superseded_html}

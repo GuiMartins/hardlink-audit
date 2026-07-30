@@ -121,10 +121,26 @@ class UnlinkedDownload:
 
 
 @dataclass
+class MissingSeed:
+    """A currently-linked library file whose source torrent no longer
+    exists in qBittorrent at all - the mirror image of UnlinkedDownload.
+    Only a "problem" under a seed-for-as-long-as-you-want-the-file policy
+    (as opposed to seed-until-ratio-then-delete); the tool can't tell which
+    policy the user follows, so this is reported as its own category
+    rather than folded into "wasted space", which it isn't."""
+    title: str
+    service: str
+    download_id: str
+    path: str
+    size: int
+
+
+@dataclass
 class AuditResult:
     import_findings: list = field(default_factory=list)
     orphan_torrents: list = field(default_factory=list)
     unlinked_downloads: list = field(default_factory=list)
+    missing_seeds: list = field(default_factory=list)
     errors: list = field(default_factory=list)  # (context, message) pairs - non-fatal problems to surface
 
     def to_dict(self):
@@ -132,6 +148,7 @@ class AuditResult:
             "import_findings": [asdict(f) for f in self.import_findings],
             "orphan_torrents": [asdict(t) for t in self.orphan_torrents],
             "unlinked_downloads": [asdict(u) for u in self.unlinked_downloads],
+            "missing_seeds": [asdict(m) for m in self.missing_seeds],
             "errors": [list(e) for e in self.errors],
         }
 
@@ -141,6 +158,7 @@ class AuditResult:
             import_findings=[ImportFinding(**f) for f in data.get("import_findings", [])],
             orphan_torrents=[OrphanTorrent(**t) for t in data.get("orphan_torrents", [])],
             unlinked_downloads=[UnlinkedDownload(**u) for u in data.get("unlinked_downloads", [])],
+            missing_seeds=[MissingSeed(**m) for m in data.get("missing_seeds", [])],
             errors=[tuple(e) for e in data.get("errors", [])],
         )
 
@@ -271,6 +289,26 @@ def find_orphan_torrents(torrents, known_download_ids, result):
                     size=t.get("size", 0),
                     save_path=t.get("save_path", "?"),
                     state=t.get("state", "?"),
+                )
+            )
+
+
+def find_missing_seeds(result, torrents):
+    """The mirror check to the wasted-space sweep: for every import that's
+    currently linked correctly (status "ok"), does its source torrent still
+    exist in qBittorrent at all? If the torrent's gone but the library file
+    is still the active one, the seed disappeared while the file is still
+    wanted - worth surfacing on its own, distinct from disk-usage findings."""
+    live_ids = {(t.get("hash") or "").upper() for t in torrents if t.get("hash")}
+    for f in result.import_findings:
+        if f.status == "ok" and f.download_id and f.download_id not in live_ids:
+            result.missing_seeds.append(
+                MissingSeed(
+                    title=f.source_title,
+                    service=f.service,
+                    download_id=f.download_id,
+                    path=f.imported_host_path or f.imported_path,
+                    size=f.size,
                 )
             )
 

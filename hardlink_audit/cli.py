@@ -65,6 +65,7 @@ def run_audit():
         audit.find_orphan_torrents(torrents, known_download_ids, result)
         audit.reclassify_relocated_downloads(result, resolvers_by_service, torrents, qbit_resolver)
         audit.scan_download_folder_links(torrents, qbit_resolver, result, known_download_ids)
+        audit.find_missing_seeds(result, torrents)
 
     return result, log_lines
 
@@ -75,7 +76,7 @@ def main():
         print(line, file=sys.stderr)
     print(report.render_text(result))
 
-    if any(f.status in BAD_STATUSES for f in result.import_findings) or result.unlinked_downloads:
+    if any(f.status in BAD_STATUSES for f in result.import_findings) or result.unlinked_downloads or result.missing_seeds:
         return 1
     return 0
 
