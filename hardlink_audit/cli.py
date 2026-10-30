@@ -41,8 +41,18 @@ def run_audit():
             resolvers_by_service[instance.name] = resolver
             log_lines.append(f"[+] {kind}/{container.name} -> {instance.base_url}")
 
+    arr_categories = set()
+    queued_ids = set()
     for instance in arr_instances:
         audit.audit_arr_instance(instance, result)
+        try:
+            arr_categories |= instance.download_categories()
+            queued_ids |= instance.queue_download_ids()
+        except Exception as exc:  # noqa: BLE001
+            # Without both, a still-importing download could look like a
+            # leftover - skip the deleted-library check entirely.
+            result.errors.append((instance.name, f"falha lendo categorias/fila (pulando 'biblioteca apagada'): {exc}"))
+            arr_categories = None
 
     known_download_ids = audit.collect_seen_download_ids(result)
 
@@ -65,6 +75,7 @@ def run_audit():
         audit.find_orphan_torrents(torrents, known_download_ids, result)
         audit.reclassify_relocated_downloads(result, resolvers_by_service, torrents, qbit_resolver)
         audit.scan_download_folder_links(torrents, qbit_resolver, result, known_download_ids)
+        audit.find_library_deleted(torrents, qbit_resolver, result, known_download_ids, arr_categories, queued_ids)
         audit.find_missing_seeds(result, torrents)
 
     return result, log_lines

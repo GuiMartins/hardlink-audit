@@ -18,14 +18,20 @@ class QbitAuthError(RuntimeError):
 
 
 def detect_internal_port(container):
-    """qBittorrent images vary the WebUI's internal port (env var on
-    linuxserver's image); fall back to the first exposed tcp port, then to
-    the de-facto default."""
+    """qBittorrent images vary the WebUI's internal port (WEBUI_PORT on
+    linuxserver's image, WEBUI_PORTS=8080/tcp on hotio's); fall back to the
+    exposed tcp ports - preferring the de-facto 8080, since the torrent
+    listen port is usually exposed too - then to 8080 itself."""
     env = container.attrs.get("Config", {}).get("Env", []) or []
     for entry in env:
         if entry.startswith("WEBUI_PORT="):
             return entry.split("=", 1)[1]
+        if entry.startswith("WEBUI_PORTS="):
+            first = entry.split("=", 1)[1].split(",")[0]
+            return first.split("/")[0]
     exposed = container.attrs.get("Config", {}).get("ExposedPorts", {}) or {}
+    if "8080/tcp" in exposed:
+        return "8080"
     for key in exposed:
         if key.endswith("/tcp"):
             return key.split("/")[0]

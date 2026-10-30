@@ -13,6 +13,7 @@ as the source of an import (orphans) - informational, since *arr history
 can be pruned/limited, so absence isn't proof of anything.
 """
 import os
+import time
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass, field
 
@@ -46,7 +47,12 @@ class OrphanTorrent:
 REASON_COPIED = "copied"
 REASON_ORPHANED_UPGRADE = "orphaned_upgrade"
 REASON_SIDECAR_ONLY = "sidecar_only"
+REASON_LIBRARY_DELETED = "library_deleted"
 REASON_UNKNOWN = "unknown"
+
+# A finished torrent younger than this is never treated as a leftover - it
+# may simply not have been imported yet.
+LIBRARY_DELETED_MIN_AGE_SECONDS = 24 * 3600
 
 REASON_TEXT = {
     REASON_COPIED: (
@@ -57,8 +63,8 @@ REASON_TEXT = {
         "seguem no mesmo disco/filesystem.",
     ),
     REASON_ORPHANED_UPGRADE: (
-        "Esse download foi substituído por um upgrade de qualidade depois - o Radarr/Sonarr apagou a "
-        "versão antiga da library, mas a cópia correspondente na pasta de download não foi limpa.",
+        "Esse arquivo não é mais o ativo na library - foi trocado por um upgrade de qualidade ou apagado "
+        "pelo Radarr/Sonarr - mas a cópia correspondente na pasta de download não foi limpa.",
         "Se não precisa mais seedar essa versão antiga, remova o torrent do qBittorrent com a opção de "
         "apagar os arquivos - o espaço é recuperado na hora. Se quiser manter seedando (ratio de tracker "
         "privado, por exemplo), não precisa fazer nada, é esperado ficar sem link mesmo.",
@@ -67,6 +73,12 @@ REASON_TEXT = {
         "O arquivo principal de vídeo está linkado corretamente - a diferença é só de arquivos auxiliares "
         "(legenda, nfo, etc) que não foram linkados junto.",
         "Geralmente não vale a pena mexer, é pouca coisa (poucos KB/MB por item).",
+    ),
+    REASON_LIBRARY_DELETED: (
+        "Torrent de uma categoria do Radarr/Sonarr em que nenhum arquivo tem par na library - o filme/"
+        "série foi apagado no *arr (que leva o histórico junto), mas o torrent continuou no qBittorrent.",
+        "Se não precisa mais seedar, apague o torrent com os arquivos - o espaço volta na hora. A library "
+        "não é tocada (já não tem nada linkado a ele).",
     ),
     REASON_UNKNOWN: (
         "Esse arquivo específico não bate com nenhum import marcado como cópia ou obsoleto no histórico - "
@@ -80,18 +92,19 @@ REASON_TEXT = {
 
 REASON_LABEL = {
     REASON_COPIED: "Cópia real",
-    REASON_ORPHANED_UPGRADE: "Órfão pós-upgrade",
+    REASON_ORPHANED_UPGRADE: "Saiu da library",
     REASON_SIDECAR_ONLY: "Só arquivo auxiliar",
+    REASON_LIBRARY_DELETED: "Biblioteca apagada",
     REASON_UNKNOWN: "Causa desconhecida",
 }
 
-# Reasons safe to offer one-click deletion for: in all three, a working
-# copy either still exists elsewhere (COPIED, SIDECAR_ONLY's video file is
-# hardlinked) or is expected to no longer matter (ORPHANED_UPGRADE - *arr
-# itself already deleted the library side on purpose). REASON_UNKNOWN is
+# Reasons safe to offer one-click deletion for: a working copy either still
+# exists elsewhere (COPIED, SIDECAR_ONLY's video file is hardlinked) or is
+# expected to no longer matter (ORPHANED_UPGRADE, LIBRARY_DELETED - *arr
+# itself already removed the library side on purpose). REASON_UNKNOWN is
 # deliberately excluded - that's exactly the "not sure a backup exists,
 # check by hand" case.
-DELETABLE_REASONS = {REASON_COPIED, REASON_ORPHANED_UPGRADE, REASON_SIDECAR_ONLY}
+DELETABLE_REASONS = {REASON_COPIED, REASON_ORPHANED_UPGRADE, REASON_SIDECAR_ONLY, REASON_LIBRARY_DELETED}
 
 
 def is_download_id_deletable(result, download_id):
@@ -351,6 +364,73 @@ def reclassify_relocated_downloads(result, resolvers_by_service, torrents, qbit_
                     f"{qbit_resolver.to_host_path(candidate)}), hardlink confirmado no local atual"
                 )
                 break
+
+
+def find_library_deleted(torrents, qbit_resolver, result, known_download_ids, arr_categories, queued_ids, now=None):
+    """The case history can't see: deleting a movie/series in *arr also
+    deletes its history, so its torrent drops out of known_download_ids and
+    would only show up as an informational orphan. Flag a torrent as a
+    deleted-library leftover when it's finished, filed under one of the
+    *arr's own categories, older than a day, not in any *arr queue (i.e. not
+    still waiting on import) and NONE of its files are hardlinked anywhere.
+    Partially linked torrents are left alone - that's not this case.
+    Flagged torrents are moved out of orphan_torrents so they aren't listed
+    twice."""
+    if not torrents or not qbit_resolver or not arr_categories:
+        return
+    now = now if now is not None else time.time()
+    shared_paths = Counter(t.get("content_path") for t in torrents if t.get("content_path"))
+    flagged = set()
+
+    for t in torrents:
+        download_id = (t.get("hash") or "").upper()
+        if not download_id or download_id in known_download_ids or download_id in queued_ids:
+            continue
+        if t.get("progress", 0) < 1 or t.get("category") not in arr_categories:
+            continue
+        completed_on = t.get("completion_on") or 0
+        if completed_on <= 0 or now - completed_on < LIBRARY_DELETED_MIN_AGE_SECONDS:
+            continue
+        content_path = t.get("content_path") or ""
+        if shared_paths.get(content_path, 0) > 1:
+            continue
+        local = qbit_resolver.to_local_path(content_path)
+        host_content_root = qbit_resolver.to_host_path(content_path)
+        if not local:
+            continue
+
+        total_bytes = 0
+        paths = []
+        any_linked = False
+        for fpath in _iter_files(local):
+            st = _stat(fpath)
+            if st is None:
+                continue
+            if st.st_nlink >= 2:
+                any_linked = True
+                break
+            total_bytes += st.st_size
+            if host_content_root:
+                rel = os.path.relpath(fpath, local)
+                paths.append(os.path.normpath(os.path.join(host_content_root, rel)))
+        if any_linked or total_bytes == 0:
+            continue
+
+        result.unlinked_downloads.append(
+            UnlinkedDownload(
+                name=t.get("name", "?"),
+                category=t.get("category", "?"),
+                download_id=download_id,
+                unlinked_bytes=total_bytes,
+                total_bytes=total_bytes,
+                reason=REASON_LIBRARY_DELETED,
+                paths=paths[:10],
+            )
+        )
+        flagged.add(download_id)
+
+    if flagged:
+        result.orphan_torrents = [o for o in result.orphan_torrents if o.torrent_hash not in flagged]
 
 
 def _iter_files(path):

@@ -198,13 +198,13 @@ def _waste_card(name, subtitle, size_bytes, reason_key, download_id=None, deleta
     delete_html = ""
     if deletable and download_id:
         confirm_msg = (
-            f"Apagar o torrent e os arquivos na pasta de download de {name}? "
+            f"Apagar {name} do qBittorrent e os arquivos dele do disco? "
             "Isso NÃO afeta a cópia na library."
         ).replace("'", "\\'")
         delete_html = f"""
         <form method="post" action="/delete/{_esc(download_id)}" class="delete-form"
               onsubmit="return confirm('{_esc(confirm_msg)}');">
-          <button type="submit" class="delete-btn">Apagar da pasta de download</button>
+          <button type="submit" class="delete-btn">Apagar torrent e arquivos</button>
         </form>
         """
     paths_html = ""

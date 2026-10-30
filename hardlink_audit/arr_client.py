@@ -150,6 +150,26 @@ class ArrInstance:
                         ids.add(str(f["id"]))
         return ids
 
+    def download_categories(self):
+        """qBittorrent categories this instance files its downloads under
+        (read from its own download client config, not guessed)."""
+        cats = set()
+        for client in self._get("/api/v3/downloadclient"):
+            if client.get("implementation") != "QBittorrent":
+                continue
+            for field_ in client.get("fields", []):
+                if field_.get("name") in ("movieCategory", "tvCategory") and field_.get("value"):
+                    cats.add(field_["value"])
+        return cats
+
+    def queue_download_ids(self):
+        """Download ids still sitting in this instance's queue - finished
+        downloads waiting on (or blocked from) import live here, and must
+        never be mistaken for leftovers."""
+        data = self._get("/api/v3/queue", page=1, pageSize=1000, includeUnknownMovieItems="true",
+                         includeUnknownSeriesItems="true")
+        return {(r.get("downloadId") or "").upper() for r in data.get("records", []) if r.get("downloadId")}
+
 
 def build_instances(kind, containers, resolvers):
     """resolvers: dict container.id -> PathResolver (built by caller from
