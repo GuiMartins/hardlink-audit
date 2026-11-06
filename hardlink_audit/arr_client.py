@@ -165,10 +165,19 @@ class ArrInstance:
     def queue_download_ids(self):
         """Download ids still sitting in this instance's queue - finished
         downloads waiting on (or blocked from) import live here, and must
-        never be mistaken for leftovers."""
+        never be mistaken for leftovers.
+
+        Items not mapped to any movie/series ("unknown" items) are left out:
+        deleting a series/movie in *arr leaves its finished torrent in the
+        queue forever as importBlocked ("title mismatch"), with nothing left
+        to import into - that's exactly the deleted-library leftover, not a
+        pending import."""
         data = self._get("/api/v3/queue", page=1, pageSize=1000, includeUnknownMovieItems="true",
                          includeUnknownSeriesItems="true")
-        return {(r.get("downloadId") or "").upper() for r in data.get("records", []) if r.get("downloadId")}
+        return {
+            r["downloadId"].upper() for r in data.get("records", [])
+            if r.get("downloadId") and (r.get("seriesId") or r.get("movieId"))
+        }
 
 
 def build_instances(kind, containers, resolvers):
